@@ -2,6 +2,9 @@ import os
 import subprocess
 import re
 import numpy as np
+import pandas as pd
+
+pd.set_option('display.max_columns', None)
 
 
 # https://github.com/MTG/sms-tools/issues/36
@@ -11,17 +14,31 @@ if sys_pf == 'darwin':
     matplotlib.use("TkAgg")
 
 
-def load_datasets(dataset):
-    ''' Call this at start of scripts that depend on having  '''
-    exists = os.path.isfile('../data/{}'.format(dataset))
+def load_python_data(ds, df_dict):
+    ''' e.g. df_dict = {'actual name': { 'dtype': object, 'name': 'new' }'''
+    dtype = {k: v['dtype'] for k, v in df_dict.items()}
+    cols = {k: v['name'] for k, v in df_dict.items()}
+    df = pd.read_csv(
+        '../data/{}.csv'.format(ds),
+        usecols=df_dict,
+        dtype=dtype
+    )
+    df = df.rename(index=str, columns=cols)
+    return df
+
+
+def load_r_data(ds):
+    ''' Call this at start of scripts that depend on having an R dataset '''
+    pathToData = '../data/{}.csv'.format(ds)
+    exists = os.path.isfile(pathToData)
     if exists:
-        print('Data already loaded')
+        return pd.read_csv(pathToData, index_col=0)
     else:
         args = ["/usr/local/bin/Rscript", "--vanilla", "../scripts/loadData.r"]
         subprocess.call(args)
-        existsAfter = os.path.isfile('../data/{}'.format(dataset))
-        if existsAfter:
-            print('Downloaded data')
+        exists_after = os.path.isfile(pathToData)
+        if exists_after:
+            return pd.read_csv(pathToData, index_col=0)
         else:
             print('Dataset not downloaded. Check scripts/loadData.r R script')
 

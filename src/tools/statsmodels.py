@@ -3,6 +3,9 @@ from statsmodels.graphics.gofplots import ProbPlot
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
+import pandas as pd
+import time
+import itertools
 
 
 #
@@ -12,10 +15,20 @@ import seaborn as sns
 
 """ Build model
 import statsmodels.formula.api as smf
+import statsmodels.api as sm
+load_datasets('Smarket.csv')
 
-formula = 'Sales ~ Price'
-df = pd.read_csv('../data/Carseats.csv', index_col=0)
-model = smf.ols(formula, df).fit()
+(
+    formula = 'Sales ~ Price'
+    df      = pd.read_csv('../data/Carseats.csv', index_col=0)
+    model   = smf.ols(formula, df).fit()
+or
+    Smarket = pd.read_csv('../data/Smarket.csv', index_col=0)
+    formula = 'Direction ~ Lag1 + Lag2 + Lag3 + Lag4 + Lag5 + Volume'
+    model   = smf.glm(formula, Smarket, family=sm.families.Binomial()).fit()
+)
+
+model.summary()
 """
 
 
@@ -163,4 +176,59 @@ def diagnostic_plots(model, df):
     X = np.linspace(0.001, max(model_leverage), 50)
     Y = f(X)
     ax4.plot(X, Y, label='Cook\'s distance', lw=1, ls='--', color='red')
+
+    def f(x): return np.sqrt((1 * p * (1 - x)) / x)
+    X = np.linspace(0.001, 0.200, 50)
+    Y = f(X)
+    ax4.plot(X, Y, lw=1, ls='--', color='red')
     ax4.legend()
+
+
+def processSubset(feature_set, X, y):
+    # Fit model on feature_set and calculate RSS
+    model = sm.OLS(y, X[list(feature_set)])
+    regr = model.fit()
+    RSS = ((regr.predict(X[list(feature_set)]) - y) ** 2).sum()
+    return {"model": regr, "RSS": RSS}
+
+
+def getBest(k, X, y):
+
+    tic = time.time()
+
+    results = []
+
+    for combo in itertools.combinations(X.columns, k):
+        results.append(processSubset(combo, X, y))
+
+    # Wrap everything up in a nice dataframe
+    models = pd.DataFrame(results)
+
+    # Choose the model with the highest RSS
+    best_model = models.loc[models['RSS'].idxmin()]
+
+    toc = time.time()
+    print(
+        "Processed",
+        models.shape[0],
+        "models on",
+        k,
+        "predictors in",
+        (toc-tic),
+        "seconds.")
+
+    # Return the best model, along with some other useful information about
+    # the model
+    return best_model
+
+
+def best_subset_selection(X, y):
+    models_best = pd.DataFrame(columns=["RSS", "model"])
+
+    tic = time.time()
+    for i in range(1, 14):
+        models_best.loc[i] = getBest(i, X, y)
+
+    toc = time.time()
+    print("Total elapsed time:", (toc-tic), "seconds.")
+    return models_best
