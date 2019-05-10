@@ -3,9 +3,6 @@ from statsmodels.graphics.gofplots import ProbPlot
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
-import pandas as pd
-import time
-import itertools
 
 
 #
@@ -184,51 +181,48 @@ def diagnostic_plots(model, df):
     ax4.legend()
 
 
-def processSubset(feature_set, X, y):
-    # Fit model on feature_set and calculate RSS
-    model = sm.OLS(y, X[list(feature_set)])
-    regr = model.fit()
-    RSS = ((regr.predict(X[list(feature_set)]) - y) ** 2).sum()
-    return {"model": regr, "RSS": RSS}
+"""
+def plot_best_subsets(best_models):
+    plt.figure(figsize=(20, 10))
+    plt.rcParams.update({'font.size': 18, 'lines.markersize': 10})
 
+    # Set up a 2x2 grid so we can look at 4 plots at once
+    plt.subplot(2, 2, 1)
 
-def getBest(k, X, y):
+    # We will now plot a red dot to indicate the model with the largest adjusted R^2 statistic.
+    # The argmax() function can be used to identify the location of the
+    # maximum point of a vector
+    plt.plot(best_models["RSS"])
+    plt.xlabel('# Predictors')
+    plt.ylabel('RSS')
 
-    tic = time.time()
+    # We will now plot a red dot to indicate the model with the largest adjusted R^2 statistic.
+    # The argmax() function can be used to identify the location of the
+    # maximum point of a vector
 
-    results = []
+    rsquared_adj = best_models.apply(lambda row: row[1].rsquared_adj, axis=1)
 
-    for combo in itertools.combinations(X.columns, k):
-        results.append(processSubset(combo, X, y))
+    plt.subplot(2, 2, 2)
+    plt.plot(rsquared_adj)
+    plt.plot(rsquared_adj.idxmax(), rsquared_adj.max(), "or")
+    plt.xlabel('# Predictors')
+    plt.ylabel('adjusted rsquared')
 
-    # Wrap everything up in a nice dataframe
-    models = pd.DataFrame(results)
+    # We'll do the same for AIC and BIC, this time looking for the models with
+    # the SMALLEST statistic
+    aic = best_models.apply(lambda row: row[1].aic, axis=1)
 
-    # Choose the model with the highest RSS
-    best_model = models.loc[models['RSS'].idxmin()]
+    plt.subplot(2, 2, 3)
+    plt.plot(aic)
+    plt.plot(aic.idxmin(), aic.min(), "or")
+    plt.xlabel('# Predictors')
+    plt.ylabel('AIC')
 
-    toc = time.time()
-    print(
-        "Processed",
-        models.shape[0],
-        "models on",
-        k,
-        "predictors in",
-        (toc-tic),
-        "seconds.")
+    bic = best_models.apply(lambda row: row[1].bic, axis=1)
 
-    # Return the best model, along with some other useful information about
-    # the model
-    return best_model
-
-
-def best_subset_selection(X, y):
-    models_best = pd.DataFrame(columns=["RSS", "model"])
-
-    tic = time.time()
-    for i in range(1, 14):
-        models_best.loc[i] = getBest(i, X, y)
-
-    toc = time.time()
-    print("Total elapsed time:", (toc-tic), "seconds.")
-    return models_best
+    plt.subplot(2, 2, 4)
+    plt.plot(bic)
+    plt.plot(bic.idxmin(), bic.min(), "or")
+    plt.xlabel('# Predictors')
+    plt.ylabel('BIC')
+"""
