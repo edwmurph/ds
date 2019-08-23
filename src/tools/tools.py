@@ -25,17 +25,27 @@ if sys_pf == 'darwin':
     matplotlib.use("TkAgg")
 
 
-def load_python_data(ds, df_dict):
-    ''' e.g. df_dict = {'actual name': { 'dtype': object, 'name': 'new' }'''
-    dtype = {k: v['dtype'] for k, v in df_dict.items()}
-    cols = {k: v['name'] for k, v in df_dict.items()}
-    df = pd.read_csv(
-        '../data/{}.csv'.format(ds),
-        usecols=df_dict,
-        dtype=dtype
-    )
-    df = df.rename(index=str, columns=cols)
-    return df
+def load_python_data(ds, df_dict=False, index_col=False, encoding='utf-8'):
+    if df_dict:
+        ''' eg. df_dict = {'actual name': { 'dtype': object, 'name': 'new' }'''
+        dtype = {k: v['dtype'] for k, v in df_dict.items()}
+        cols = {k: v['name'] or k for k, v in df_dict.items()}
+        df = pd.read_csv(
+            '../data/{}.csv'.format(ds),
+            usecols=df_dict,
+            dtype=dtype,
+            encoding=encoding
+        )
+        if index_col:
+            df = df.set_index(index_col)
+        df = trim_str_vals(df)
+        df = df.replace(r'^\s*$', np.nan, regex=True)
+        return df.rename(index=str, columns=cols)
+    else:
+        df = pd.read_csv('../data/{}.csv'.format(ds), encoding=encoding)
+        df = trim_str_vals(df)
+        df = df.replace(r'^\s*$', np.nan, regex=True)
+        return df
 
 
 def load_r_data(ds):
@@ -53,10 +63,40 @@ def load_r_data(ds):
         else:
             print('Dataset not downloaded. Check scripts/loadData.r R script')
 
+#
+# Data preprocessing
+#
+
+
+def drop_cols_with_only_val_when_grouped(df, groupby, vals, threshold):
+    grouped = df.groupby(groupby).aggregate(
+        lambda x: all(any(item == val for val in vals) for item in x.values))
+    cols = []
+    for column in grouped.columns:
+        series = grouped[column].value_counts()/grouped[column].count()
+        if True in series.index:
+            if series[True] > threshold:
+                cols.append(column)
+    return df.drop(columns=cols, axis=1)
+
+
+def trim_str_vals(df):
+    df_str = df.select_dtypes(['object'])
+    df[df_str.columns] = df_str.apply(lambda x: x.str.strip())
+    return df
+
+
+def del_cols_with_1_val(df):
+    columns = []
+    for column in df.columns:
+        if len(df[column].value_counts()) == 1:
+            columns.append(column)
+    return df.drop(columns, axis=1)
 
 #
 # Matplotlib
 #
+
 
 ''' Create figure with multiple subplots
 
@@ -126,9 +166,9 @@ def min_max_scaler(df, columns):
     return df
 
 
-def normalize(df):
+def normalize(df, exclusions=[]):
     result = df.copy()
-    for feature_name in df.columns:
+    for feature_name in [x for x in df.columns if x not in exclusions]:
         max_value = df[feature_name].max()
         min_value = df[feature_name].min()
         result[feature_name] = (
@@ -168,19 +208,26 @@ def processSubset(feature_set, X, y, model, numerical):
         pred = cross_val_predict(model, X[feature_set], y, cv=5)
         mse = mean_squared_error(y, pred)
         return {'feature_set': feature_set,
-                'num_features': len(feature_set), 'mse': mse}
+                'num_features': len(feature_set),
+                'mse': mse}
     else:
         score = cross_val_score(model, X[feature_set], y, cv=5).mean()
         return {'feature_set': feature_set,
-                'num_features': len(feature_set), 'score': score}
+                'num_features': len(feature_set),
+                'score': score}
 
 
 def getBest(k, X, y, model, quiet, numerical):
     tic = time.time()
     results = []
+    durations = []
 
     for combo in itertools.combinations(X.columns, k):
-        results.append(processSubset(list(combo), X, y, model, numerical))
+        start = time.time()
+        result = processSubset(list(combo), X, y, model, numerical)
+        stop = time.time()
+        durations.append(stop - start)
+        results.append(result)
 
     # Wrap everything up in a nice dataframe
     models = pd.DataFrame(results)
@@ -191,23 +238,40 @@ def getBest(k, X, y, model, quiet, numerical):
         best_model = models.loc[models['score'].idxmax()]
 
     toc = time.time()
+    seconds = (toc-tic)
+
+    if hasattr(best_model, 'mse'):
+        score = '%.5f' % best_model.mse
+    else:
+        score = '%.5f' % best_model.score
+
+    mean_durr = '%.5f' % np.mean(durations)
+
     if not quiet:
         print(
+            time.asctime(),
             "Processed",
-            models.shape[0],
+            str(int(models.shape[0])).rjust(10),
             "models on",
-            k,
+            str(int(k)).rjust(2),
             "features in",
-            (toc-tic),
-            "seconds.")
+            str(int(seconds / (60*60))).rjust(2) + 'h',
+            str(int(seconds / 60 % 60)).rjust(2) + 'm',
+            str(int(seconds % 60)).rjust(2) + 's',
+            '|',
+            'avg ' + mean_durr + 's/model',
+            '|',
+            score,
+            )
 
     # Return the best model, along with some other useful information about
     # the model
     return best_model
 
 
-def best_subset_selection(X, y, model, quiet=False, numerical=True):
-    num_features = len(X.columns) + 1
+def best_subset_selection(
+        X, y, model, quiet=False, numerical=True, lowerLim=False,
+        upperLim=False, tol=3):
     if numerical:
         best_models = pd.DataFrame(
             columns=[
@@ -222,11 +286,42 @@ def best_subset_selection(X, y, model, quiet=False, numerical=True):
                 'num_features'])
 
     tic = time.time()
-    for i in range(1, num_features):
+    lower = lowerLim or 1
+    upper = upperLim or len(X.columns) + 1
+    for i in range(lower, upper):
         best_models.loc[i] = getBest(i, X, y, model, quiet, numerical)
+        range_start = i-tol-1
+        if best_models.index.contains(range_start) and numerical:
+            mse_range_start = best_models.loc[range_start].mse
+            cont = False
+            for k in [j for j in range(range_start + 1, i+1)]:
+                mse = best_models.loc[k].mse
+                if mse < mse_range_start:
+                    cont = True
+            if cont:
+                continue
+            else:
+                break
+        if best_models.index.contains(range_start) and not numerical:
+            score_range_start = best_models.loc[range_start].score
+            cont = False
+            for k in [j for j in range(range_start + 1, i+1)]:
+                score = best_models.loc[k].score
+                if score > score_range_start:
+                    cont = True
+            if cont:
+                continue
+            else:
+                break
 
     toc = time.time()
-    print("Total elapsed time:", (toc-tic), "seconds.")
+    seconds = (toc-tic)
+    print("Total elapsed time:",
+          str(int(seconds / (60*60))).rjust(2) + 'h',
+          str(int(seconds / 60 % 60)).rjust(2) + 'm',
+          str(int(seconds % 60)).rjust(2) + 's'
+          )
+
     if not quiet:
         print('\nBest models for each number of features:')
         print(best_models)
