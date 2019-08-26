@@ -7,9 +7,10 @@ import matplotlib.pyplot as plt
 import time
 import itertools
 
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler
-from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import cross_val_predict, cross_val_score
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, OneHotEncoder, LabelEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.model_selection import cross_val_score
 
 import pydotplus
 from IPython.display import Image
@@ -160,12 +161,6 @@ def label_encoder(df, columns):
     return df, le_dict
 
 
-def min_max_scaler(df, columns):
-    scaler = MinMaxScaler()
-    df[columns] = scaler.fit_transform(df[columns])
-    return df
-
-
 def normalize(df, exclusions=[]):
     result = df.copy()
     for feature_name in [x for x in df.columns if x not in exclusions]:
@@ -203,28 +198,48 @@ def get_top_abs_correlations(df, threshold=0.8, num_corr=7):
     return corr_df, list(correlated)
 
 
-def processSubset(feature_set, X, y, model, numerical):
-    if numerical:
-        pred = cross_val_predict(model, X[feature_set], y, cv=5)
-        mse = mean_squared_error(y, pred)
-        return {'feature_set': feature_set,
-                'num_features': len(feature_set),
-                'mse': mse}
-    else:
-        score = cross_val_score(model, X[feature_set], y, cv=5).mean()
-        return {'feature_set': feature_set,
-                'num_features': len(feature_set),
-                'score': score}
+def build_clf(features, categoricals, model):
+    numeric_features = [i for i in features if i not in categoricals]
+    categorical_features = [i for i in features if i in categoricals]
+    numeric_transformer = Pipeline(steps=[('scaler', StandardScaler())])
+    categorical_transformer = Pipeline(
+        steps=[('onehot', OneHotEncoder(categories='auto'))])
+
+    transformers = []
+
+    if len(numeric_features) > 0:
+        transformers = transformers + [('num',
+                                        numeric_transformer,
+                                        numeric_features)]
+
+    if len(categorical_features) > 0:
+        transformers = transformers + [('cat',
+                                        categorical_transformer,
+                                        categorical_features)]
+
+    preprocessor = ColumnTransformer(transformers)
+
+    return Pipeline(
+        steps=[('preprocessor', preprocessor),
+               ('classifier', model)])
 
 
-def getBest(k, X, y, model, quiet, numerical):
+def processSubset(features, X, y, model, categoricals):
+    clf = build_clf(features, categoricals, model)
+    score = cross_val_score(clf, X[features], y, cv=5).mean()
+    return {'feature_set': features,
+            'num_features': len(features),
+            'score': score}
+
+
+def getBest(k, X, y, model, quiet, categoricals):
     tic = time.time()
     results = []
     durations = []
 
     for combo in itertools.combinations(X.columns, k):
         start = time.time()
-        result = processSubset(list(combo), X, y, model, numerical)
+        result = processSubset(list(combo), X, y, model, categoricals)
         stop = time.time()
         durations.append(stop - start)
         results.append(result)
@@ -232,20 +247,10 @@ def getBest(k, X, y, model, quiet, numerical):
     # Wrap everything up in a nice dataframe
     models = pd.DataFrame(results)
 
-    if numerical:
-        best_model = models.loc[models['mse'].idxmin()]
-    else:
-        best_model = models.loc[models['score'].idxmax()]
+    best_model = models.loc[models['score'].idxmax()]
 
     toc = time.time()
     seconds = (toc-tic)
-
-    if hasattr(best_model, 'mse'):
-        score = '%.5f' % best_model.mse
-    else:
-        score = '%.5f' % best_model.score
-
-    mean_durr = '%.5f' % np.mean(durations)
 
     if not quiet:
         print(
@@ -259,50 +264,30 @@ def getBest(k, X, y, model, quiet, numerical):
             str(int(seconds / 60 % 60)).rjust(2) + 'm',
             str(int(seconds % 60)).rjust(2) + 's',
             '|',
-            'avg ' + mean_durr + 's/model',
+            'avg ' + '%.5f' % np.mean(durations) + 's/model',
             '|',
-            score,
+            '%.5f' % best_model.score,
             )
 
-    # Return the best model, along with some other useful information about
-    # the model
     return best_model
 
 
 def best_subset_selection(
-        X, y, model, quiet=False, numerical=True, lowerLim=False,
+        X, y, model, quiet=False, categoricals=[], lowerLim=False,
         upperLim=False, tol=3):
-    if numerical:
-        best_models = pd.DataFrame(
-            columns=[
-                'mse',
-                'feature_set',
-                'num_features'])
-    else:
-        best_models = pd.DataFrame(
-            columns=[
-                'score',
-                'feature_set',
-                'num_features'])
+    best_models = pd.DataFrame(
+        columns=[
+            'score',
+            'feature_set',
+            'num_features'])
 
     tic = time.time()
     lower = lowerLim or 1
     upper = upperLim or len(X.columns) + 1
     for i in range(lower, upper):
-        best_models.loc[i] = getBest(i, X, y, model, quiet, numerical)
+        best_models.loc[i] = getBest(i, X, y, model, quiet, categoricals)
         range_start = i-tol-1
-        if best_models.index.contains(range_start) and numerical:
-            mse_range_start = best_models.loc[range_start].mse
-            cont = False
-            for k in [j for j in range(range_start + 1, i+1)]:
-                mse = best_models.loc[k].mse
-                if mse < mse_range_start:
-                    cont = True
-            if cont:
-                continue
-            else:
-                break
-        if best_models.index.contains(range_start) and not numerical:
+        if best_models.index.contains(range_start):
             score_range_start = best_models.loc[range_start].score
             cont = False
             for k in [j for j in range(range_start + 1, i+1)]:
@@ -326,45 +311,25 @@ def best_subset_selection(
         print('\nBest models for each number of features:')
         print(best_models)
 
-    if numerical:
-        best_num_features = best_models.mse.idxmin()
-        best_mse = best_models.mse.min()
-        worst_mse = best_models.mse.max()
-        best_features = best_models[best_models.mse ==
-                                    best_mse].feature_set.values[0]
-    else:
-        best_num_features = best_models.score.idxmax()
-        best_score = best_models.score.max()
-        worst_score = best_models.score.min()
-        best_features = best_models[best_models.score ==
-                                    best_score].feature_set.values[0]
+    best_num_features = best_models.score.idxmax()
+    best_score = best_models.score.max()
+    worst_score = best_models.score.min()
+    best_features = best_models[best_models.score ==
+                                best_score].feature_set.values[0]
 
     if not quiet:
         print('\nBest features:\n', best_features)
-        if numerical:
-            print('\nBest features mse:', best_mse, 'worst:', worst_mse)
-            plt.plot(best_models.num_features, best_models.mse)
-            plt.annotate(
-                '%0.5f' % best_mse, xy=(best_num_features, best_mse),
-                xytext=(best_num_features, (best_mse + worst_mse) / 2),
-                arrowprops=dict(arrowstyle="->"))
-            plt.title('Best subset selection')
-            plt.xlabel('num features')
-            plt.ylabel('MSE')
-        else:
-            print('\nBest features score:', best_score, 'worst:', worst_score)
-            plt.plot(best_models.num_features, best_models.score)
-            plt.annotate(
-                '%0.5f' % best_score, xy=(best_num_features, best_score),
-                xytext=(best_num_features, (best_score + worst_score) / 2),
-                arrowprops=dict(arrowstyle="->"))
-            plt.title('Best subset selection')
-            plt.xlabel('num features')
-            plt.ylabel('mean accuracy score')
-    if numerical:
-        return best_mse, best_features
-    else:
-        return best_score, best_features
+        print('\nBest features score:', best_score, 'worst:', worst_score)
+        plt.plot(best_models.num_features, best_models.score)
+        plt.annotate(
+            '%0.5f' % best_score, xy=(best_num_features, best_score),
+            xytext=(best_num_features, (best_score + worst_score) / 2),
+            arrowprops=dict(arrowstyle="->"))
+        plt.title('Best subset selection')
+        plt.xlabel('num features')
+        plt.ylabel('mean accuracy score')
+
+    return best_score, best_features
 
 
 def print_tree(model, features):
